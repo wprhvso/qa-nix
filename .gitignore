@@ -1,0 +1,6 @@
+/statix.toml
+fixtures/*/statix.toml
+
+result
+result-*
+.direnv/

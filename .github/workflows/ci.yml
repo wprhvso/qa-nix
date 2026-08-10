@@ -1,0 +1,155 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  qa-shell:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: wprhvso/qa-shell@v1
+
+  self:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./
+        with:
+          exclude: fixtures/dirty
+
+  flake:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./
+        with:
+          checks: flake
+
+  clean:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        checks: [all, fmt, statix, deadnix, "fmt,statix"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: ./
+        with:
+          checks: ${{ matrix.checks }}
+          working-directory: fixtures/clean
+
+  dirty:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        checks: [fmt, statix, deadnix]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - id: run
+        continue-on-error: true
+        uses: ./
+        with:
+          checks: ${{ matrix.checks }}
+          working-directory: fixtures/dirty
+
+      - name: Проверка, что экшен упал
+        env:
+          OUTCOME: ${{ steps.run.outcome }}
+          CHECK: ${{ matrix.checks }}
+        run: |
+          set -euo pipefail
+          if [[ $OUTCOME != failure ]]; then
+            echo "::error::проверка '$CHECK' прошла на грязном проекте (outcome=$OUTCOME)"
+            exit 1
+          fi
+          echo "ok: '$CHECK' упала, как и ожидалось"
+
+  exclude:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Грязный файл, исключённый из проверок
+        run: cp fixtures/dirty/default.nix fixtures/clean/skipped.nix
+
+      - uses: ./
+        with:
+          working-directory: fixtures/clean
+          exclude: skipped.nix
+
+  stray-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Подкладываем локальный конфиг
+        run: echo 'disabled = ["useless_parens"]' > fixtures/clean/statix.toml
+
+      - id: run
+        continue-on-error: true
+        uses: ./
+        with:
+          checks: statix
+          config-mode: check
+          working-directory: fixtures/clean
+
+      - name: Проверка, что экшен упал
+        env:
+          OUTCOME: ${{ steps.run.outcome }}
+        run: |
+          set -euo pipefail
+          if [[ $OUTCOME != failure ]]; then
+            echo "::error::config-mode=check не заметил statix.toml (outcome=$OUTCOME)"
+            exit 1
+          fi
+          echo "ok: локальный конфиг обнаружен"
+
+  unknown-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - id: run
+        continue-on-error: true
+        uses: ./
+        with:
+          checks: statx
+          setup-nix: "false"
+
+      - name: Проверка, что экшен упал
+        env:
+          OUTCOME: ${{ steps.run.outcome }}
+        run: |
+          set -euo pipefail
+          if [[ $OUTCOME != failure ]]; then
+            echo "::error::неизвестное имя проверки прошло (outcome=$OUTCOME)"
+            exit 1
+          fi
+          echo "ok: неизвестная проверка отвергнута"

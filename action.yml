@@ -1,0 +1,232 @@
+name: "qa-nix"
+description: "Единый QA для Nix-репозиториев: nixfmt, statix, deadnix и nix flake check."
+author: "wprhvso"
+
+branding:
+  icon: "check-circle"
+  color: "blue"
+
+inputs:
+  checks:
+    description: >-
+      Что запускать: all либо список через запятую из fmt, statix, deadnix,
+      flake. all — это fmt, statix, deadnix; flake собирает весь флейк,
+      поэтому запускается только по имени.
+    required: false
+    default: "all"
+
+  working-directory:
+    description: "Каталог проекта относительно корня рабочей копии."
+    required: false
+    default: "."
+
+  config-mode:
+    description: >-
+      enforce — общие конфиги перекрывают локальные, о найденных локальных пишем warning;
+      check — то же плюс падение job, если в репозитории остались свои настройки;
+      off — общие конфиги не устанавливаются.
+    required: false
+    default: "enforce"
+
+  setup-nix:
+    description: "Ставить nix самому экшену (cachix/install-nix-action)."
+    required: false
+    default: "true"
+
+  nixpkgs:
+    description: "Флейк-референс nixpkgs, из которого берутся nixfmt, statix и deadnix."
+    required: false
+    default: "github:NixOS/nixpkgs/nixos-unstable"
+
+  nix-config:
+    description: "Дополнительные строки nix.conf при установке nix."
+    required: false
+    default: ""
+
+  exclude:
+    description: "Пути и glob'ы через запятую, которые не проверяются."
+    required: false
+    default: ""
+
+  fmt-args:
+    description: "Дополнительные аргументы nixfmt."
+    required: false
+    default: ""
+
+  statix-args:
+    description: "Дополнительные аргументы statix check."
+    required: false
+    default: ""
+
+  deadnix-args:
+    description: "Дополнительные аргументы deadnix."
+    required: false
+    default: ""
+
+  flake-args:
+    description: "Дополнительные аргументы nix flake check."
+    required: false
+    default: ""
+
+runs:
+  using: "composite"
+
+  steps:
+    - name: Разбор списка проверок
+      id: plan
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        QA_CHECKS: ${{ inputs.checks }}
+      run: |
+        set -euo pipefail
+        normalized=$(echo "$QA_CHECKS" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+        if [[ $normalized == all ]]; then
+          normalized="fmt,statix,deadnix"
+        fi
+        if [[ -z $normalized ]]; then
+          echo "::error::пустой список проверок; допустимы: all, fmt, statix, deadnix, flake"
+          exit 2
+        fi
+        IFS=',' read -r -a names <<<"$normalized"
+        for name in "${names[@]}"; do
+          case "$name" in
+            fmt | statix | deadnix | flake) ;;
+            *)
+              echo "::error::неизвестная проверка '$name'; допустимы: all, fmt, statix, deadnix, flake"
+              exit 2
+              ;;
+          esac
+        done
+        echo "selected=,${normalized}," >>"$GITHUB_OUTPUT"
+        echo "Проверки: ${names[*]}"
+
+    - name: Установка nix
+      if: inputs.setup-nix == 'true'
+      uses: cachix/install-nix-action@v31
+      with:
+        extra_nix_config: |
+          experimental-features = nix-command flakes
+          ${{ inputs.nix-config }}
+
+    - name: Общие конфиги QA
+      if: inputs.config-mode != 'off'
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        QA_ACTION_PATH: ${{ github.action_path }}
+        QA_CONFIG_MODE: ${{ inputs.config-mode }}
+      run: bash "$QA_ACTION_PATH/scripts/install-config.sh"
+
+    - name: Поиск файлов .nix
+      if: contains(steps.plan.outputs.selected, ',fmt,') || contains(steps.plan.outputs.selected, ',deadnix,')
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        QA_EXCLUDE: ${{ inputs.exclude }}
+        QA_FILE_LIST: ${{ runner.temp }}/qa-nix-files.txt
+      run: |
+        set -euo pipefail
+        if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+          found=$(git -c core.quotePath=false ls-files --cached --others --exclude-standard -- '*.nix')
+        else
+          found=$(find . \
+            \( -name .git -o -name .direnv -o -name node_modules -o -name result -o -name 'result-*' \) -prune \
+            -o -type f -name '*.nix' -print | sed 's|^\./||' | sort)
+        fi
+        IFS=',' read -r -a patterns <<<"$(echo "$QA_EXCLUDE" | tr -d '[:space:]')"
+        : >"$QA_FILE_LIST"
+        while IFS= read -r file; do
+          [[ -n $file ]] || continue
+          skip=false
+          for pattern in "${patterns[@]}"; do
+            [[ -n $pattern ]] || continue
+            # shellcheck disable=SC2053
+            if [[ $file == $pattern || $file == $pattern/* ]]; then
+              skip=true
+              break
+            fi
+          done
+          [[ $skip == true ]] && continue
+          printf '%s\n' "$file" >>"$QA_FILE_LIST"
+        done <<<"$found"
+        echo "Файлов .nix: $(wc -l <"$QA_FILE_LIST")"
+
+    - name: nixfmt
+      if: contains(steps.plan.outputs.selected, ',fmt,')
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        QA_NIXPKGS: ${{ inputs.nixpkgs }}
+        QA_FMT_ARGS: ${{ inputs.fmt-args }}
+        QA_FILE_LIST: ${{ runner.temp }}/qa-nix-files.txt
+      run: |
+        set -euo pipefail
+        if [[ ! -s $QA_FILE_LIST ]]; then
+          echo "файлов .nix нет — пропускаю"
+          exit 0
+        fi
+        mapfile -t files <"$QA_FILE_LIST"
+        read -r -a args <<<"$QA_FMT_ARGS" || true
+        printf '+ nixfmt --check %s (файлов: %d)\n' "$QA_FMT_ARGS" "${#files[@]}"
+        nix --extra-experimental-features "nix-command flakes" \
+          shell "$QA_NIXPKGS#nixfmt" \
+          -c nixfmt --check "${args[@]}" "${files[@]}"
+
+    - name: statix
+      if: contains(steps.plan.outputs.selected, ',statix,')
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        QA_NIXPKGS: ${{ inputs.nixpkgs }}
+        QA_EXCLUDE: ${{ inputs.exclude }}
+        QA_STATIX_ARGS: ${{ inputs.statix-args }}
+      run: |
+        set -euo pipefail
+        IFS=',' read -r -a patterns <<<"$(echo "$QA_EXCLUDE" | tr -d '[:space:]')"
+        ignore=()
+        for pattern in "${patterns[@]}"; do
+          [[ -n $pattern ]] || continue
+          ignore+=(--ignore "$pattern")
+        done
+        read -r -a args <<<"$QA_STATIX_ARGS" || true
+        printf '+ statix check %s %s\n' "${ignore[*]:-}" "$QA_STATIX_ARGS"
+        nix --extra-experimental-features "nix-command flakes" \
+          shell "$QA_NIXPKGS#statix" \
+          -c statix check "${ignore[@]}" "${args[@]}"
+
+    - name: deadnix
+      if: contains(steps.plan.outputs.selected, ',deadnix,')
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        QA_ACTION_PATH: ${{ github.action_path }}
+        QA_NIXPKGS: ${{ inputs.nixpkgs }}
+        QA_DEADNIX_ARGS: ${{ inputs.deadnix-args }}
+        QA_FILE_LIST: ${{ runner.temp }}/qa-nix-files.txt
+      run: |
+        set -euo pipefail
+        if [[ ! -s $QA_FILE_LIST ]]; then
+          echo "файлов .nix нет — пропускаю"
+          exit 0
+        fi
+        mapfile -t files <"$QA_FILE_LIST"
+        args_file="$QA_ACTION_PATH/config/deadnix.args"
+        read -r -a flags <<<"$(grep -vE '^[[:space:]]*(#|$)' "$args_file" | tr '\n' ' ')" || true
+        read -r -a args <<<"$QA_DEADNIX_ARGS" || true
+        printf '+ deadnix --fail %s %s (файлов: %d)\n' "${flags[*]}" "$QA_DEADNIX_ARGS" "${#files[@]}"
+        nix --extra-experimental-features "nix-command flakes" \
+          shell "$QA_NIXPKGS#deadnix" \
+          -c deadnix --fail "${flags[@]}" "${args[@]}" "${files[@]}"
+
+    - name: nix flake check
+      if: contains(steps.plan.outputs.selected, ',flake,')
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        QA_FLAKE_ARGS: ${{ inputs.flake-args }}
+      run: |
+        set -euo pipefail
+        read -r -a args <<<"$QA_FLAKE_ARGS" || true
+        printf '+ nix flake check -L %s\n' "$QA_FLAKE_ARGS"
+        nix --extra-experimental-features "nix-command flakes" flake check -L "${args[@]}"
