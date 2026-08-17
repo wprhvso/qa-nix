@@ -13,7 +13,9 @@ in
     };
   };
 
+  # Повторяющийся префикс networking.* — проверка, что repeated_keys выключен.
   config = lib.mkIf cfg.enable {
     networking.firewall.allowedTCPPorts = [ cfg.port ];
+    networking.firewall.allowedUDPPorts = [ cfg.port ];
   };
 }

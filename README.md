@@ -91,6 +91,12 @@ jobs:
 Локальные настройки, о которых экшен предупреждает: `statix.toml`,
 `.statix.toml`, `.nixfmt.toml`, `treefmt.toml`, `treefmt.nix`.
 
+Выключенные линты statix:
+
+| Линт | Почему |
+| --- | --- |
+| `repeated_keys` (W20) | В модулях NixOS повторяющийся префикс — обычный стиль (`locations."/"` рядом с `locations."= /api/v1/relay"`, `networking.firewall.*`). |
+
 ## Локальный прогон
 
 ```bash

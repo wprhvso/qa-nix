@@ -1,4 +1,10 @@
-disabled = []
+# Отключённые линты — каждый с причиной.
+disabled = [
+  # W20 repeated_keys: в модулях NixOS повторяющийся префикс — обычный стиль
+  # (locations."/" рядом с locations."= /api/v1/relay", networking.firewall.*).
+  # Сворачивать такое в один attrset читаемости не добавляет.
+  "repeated_keys",
+]
 
 ignore = [
   ".direnv",
