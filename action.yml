@@ -273,7 +273,9 @@ runs:
         nix --extra-experimental-features "nix-command flakes" \
           path-info --all 2>/dev/null | sort >"$QA_STORE_AFTER" || exit 0
         # Пути, подписанные cache.nixos.org, attic отсеет сам по upstream-ключам.
-        mapfile -t fresh < <(comm -13 "$QA_STORE_BEFORE" "$QA_STORE_AFTER")
+        # А .drv из кеша не подставляются вообще, подписи у них нет, и фильтр их
+        # пропускает — вместе с замыканиями из входных drv и исходников.
+        mapfile -t fresh < <(comm -13 "$QA_STORE_BEFORE" "$QA_STORE_AFTER" | grep -v '\.drv$')
         if ((${#fresh[@]} == 0)); then
           echo "новых путей нет"
           exit 0
