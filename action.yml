@@ -121,6 +121,22 @@ runs:
           experimental-features = nix-command flakes
           ${{ inputs.nix-config }}
 
+    - name: Снимок стора
+      id: store
+      shell: bash
+      env:
+        QA_STORE_BEFORE: ${{ runner.temp }}/qa-nix-store-before.txt
+      run: |
+        set -euo pipefail
+        if ! command -v attic >/dev/null || [[ ! -f $HOME/.config/attic/config.toml ]]; then
+          echo "приватного кеша нет — пуш будет пропущен"
+          echo "push=no" >>"$GITHUB_OUTPUT"
+          exit 0
+        fi
+        nix --extra-experimental-features "nix-command flakes" \
+          path-info --all 2>/dev/null | sort >"$QA_STORE_BEFORE" || true
+        echo "push=yes" >>"$GITHUB_OUTPUT"
+
     - name: Общие конфиги QA
       if: inputs.config-mode != 'off'
       shell: bash
@@ -242,3 +258,25 @@ runs:
         read -r -a args <<<"$QA_FLAKE_ARGS" || true
         printf '+ nix flake check -L %s\n' "$QA_FLAKE_ARGS"
         nix --extra-experimental-features "nix-command flakes" flake check -L "${args[@]}"
+
+    # Кеш ускоряет следующие прогоны, но его недоступность не повод валить сборку.
+    - name: Пуш в кеш
+      if: always() && steps.store.outputs.push == 'yes'
+      shell: bash
+      env:
+        QA_STORE_BEFORE: ${{ runner.temp }}/qa-nix-store-before.txt
+        QA_STORE_AFTER: ${{ runner.temp }}/qa-nix-store-after.txt
+        QA_ATTIC_CACHE: murasya:main
+      run: |
+        set -uo pipefail
+        [[ -s $QA_STORE_BEFORE ]] || exit 0
+        nix --extra-experimental-features "nix-command flakes" \
+          path-info --all 2>/dev/null | sort >"$QA_STORE_AFTER" || exit 0
+        # Пути, подписанные cache.nixos.org, attic отсеет сам по upstream-ключам.
+        mapfile -t fresh < <(comm -13 "$QA_STORE_BEFORE" "$QA_STORE_AFTER")
+        if ((${#fresh[@]} == 0)); then
+          echo "новых путей нет"
+          exit 0
+        fi
+        printf '+ attic push %s (путей: %d)\n' "$QA_ATTIC_CACHE" "${#fresh[@]}"
+        attic push "$QA_ATTIC_CACHE" "${fresh[@]}" || echo "::warning::пуш в кеш не удался"
