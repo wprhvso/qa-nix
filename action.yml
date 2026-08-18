@@ -101,8 +101,20 @@ runs:
         echo "selected=,${normalized}," >>"$GITHUB_OUTPUT"
         echo "Проверки: ${names[*]}"
 
+    - name: Проверка окружения
+      id: have
+      shell: bash
+      run: |
+        set -euo pipefail
+        if command -v nix >/dev/null; then
+          echo "nix=yes" >>"$GITHUB_OUTPUT"
+          echo "nix уже установлен — пропускаю"
+        else
+          echo "nix=no" >>"$GITHUB_OUTPUT"
+        fi
+
     - name: Установка nix
-      if: inputs.setup-nix == 'true'
+      if: inputs.setup-nix == 'true' && steps.have.outputs.nix != 'yes'
       uses: cachix/install-nix-action@v31
       with:
         extra_nix_config: |
