@@ -259,7 +259,6 @@ runs:
         printf '+ nix flake check -L %s\n' "$QA_FLAKE_ARGS"
         nix --extra-experimental-features "nix-command flakes" flake check -L "${args[@]}"
 
-    # Кеш ускоряет следующие прогоны, но его недоступность не повод валить сборку.
     - name: Пуш в кеш
       if: always() && steps.store.outputs.push == 'yes'
       shell: bash
